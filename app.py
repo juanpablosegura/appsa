@@ -3,12 +3,10 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import io
 import base64
-# Ya no necesitamos 'zipfile'
 
 # --- Funciones de Parseo (SIN CAMBIOS) ---
 
 def parsear_factura(xml_root):
-    """Extrae datos de un XML de factura."""
     try:
         info_tributaria = xml_root.find('infoTributaria')
         info_factura = xml_root.find('infoFactura')
@@ -28,10 +26,10 @@ def parsear_factura(xml_root):
             "Importe Total": importe_total,
         }
     except AttributeError:
+        # Si falta una etiqueta (como en un RIDE), retorna None
         return None
 
 def parsear_retencion(xml_root):
-    """Extrae datos de un XML de retención."""
     try:
         info_tributaria = xml_root.find('infoTributaria')
         info_comp = xml_root.find('infoCompRetencion')
@@ -61,12 +59,12 @@ def parsear_retencion(xml_root):
             })
         return datos_retencion
     except AttributeError:
+        # Si falta una etiqueta, retorna None
         return None
 
-# --- Función para generar el link de descarga (SIN CAMBIOS) ---
+# --- Función de descarga (SIN CAMBIOS) ---
 
 def get_table_download_link(df_dict):
-    """Genera un link para descargar un diccionario de DataFrames como un archivo Excel."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for sheet_name, df in df_dict.items():
@@ -76,7 +74,7 @@ def get_table_download_link(df_dict):
     href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="reporte_sri.xlsx">Descargar Reporte en Excel</a>'
     return href
 
-# --- Interfaz de Streamlit (CON CAMBIOS) ---
+# --- Interfaz de Streamlit ---
 
 st.set_page_config(layout="wide")
 st.title(" visor de Comprobantes del SRI 🧾")
@@ -84,24 +82,18 @@ st.markdown("""
 Sube los archivos `.xml` que descargaste del portal del SRI para ver tus facturas y retenciones.
 """)
 
-# --- CAMBIO AQUÍ ---
-# Ahora acepta múltiples archivos .xml en lugar de un .zip
 uploaded_files = st.file_uploader("📂 Arrastra y suelta tus archivos .xml aquí", 
                                   type="xml", 
                                   accept_multiple_files=True)
 
-if uploaded_files: # Si la lista no está vacía
+if uploaded_files:
     facturas_data = []
     retenciones_data = []
 
-    # --- CAMBIO AQUÍ ---
-    # Iteramos sobre la lista de archivos subidos
+    # --- BUCLE DE PROCESAMIENTO MEJORADO ---
     for xml_file in uploaded_files:
         try:
-            # Leemos el contenido de cada archivo
             xml_content = xml_file.read()
-            
-            # Parsear el contenido XML
             root = ET.fromstring(xml_content)
             
             # Identificar el tipo de comprobante
@@ -109,42 +101,49 @@ if uploaded_files: # Si la lista no está vacía
                 factura = parsear_factura(root)
                 if factura:
                     facturas_data.append(factura)
+                else:
+                    st.warning(f"El archivo '{xml_file.name}' parece ser una factura, pero no se pudieron leer sus datos internos. ¿Quizás es un RIDE?")
+            
             elif root.tag == 'comprobanteRetencion':
                 retenciones = parsear_retencion(root)
                 if retenciones:
                     retenciones_data.extend(retenciones)
-        
-        except Exception as e:
-            # Avisa si un archivo falla, pero continúa con los demás
-            st.warning(f"No se pudo procesar el archivo '{xml_file.name}': {e}")
+                else:
+                    st.warning(f"El archivo '{xml_file.name}' parece ser una retención, pero no se pudieron leer sus datos internos. ¿QuizS es un RIDE?")
+            
+            else:
+                # El archivo es XML, pero no es un tipo conocido
+                st.warning(f"El archivo '{xml_file.name}' es un XML válido, pero su tipo ('{root.tag}') no es 'factura' ni 'comprobanteRetencion'. Es probable que sea un RIDE.")
 
-    # --- El resto del código para mostrar datos es IDÉNTICO ---
+        except ET.ParseError as e:
+            # ¡El error más probable! El archivo NO es un XML válido (es HTML)
+            st.error(f"Error al procesar '{xml_file.name}': El archivo no es un XML válido. Es muy probable que sea un RIDE (archivo HTML).")
+        except Exception as e:
+            # Otro error inesperado
+            st.error(f"Error inesperado con '{xml_file.name}': {e}")
+
+    # --- Mostrar resultados (SIN CAMBIOS) ---
     
-    # --- Mostrar datos de Facturas ---
+    st.divider() # Separador visual
+
     if facturas_data:
-        st.header("Facturas Recibidas")
+        st.header("Facturas Procesadas Exitosamente")
         df_facturas = pd.DataFrame(facturas_data)
-        
         total_facturado = df_facturas['Importe Total'].sum()
         st.metric("Total Facturado", f"${total_facturado:,.2f}")
-        
         st.dataframe(df_facturas)
     else:
-        st.info("No se encontraron facturas en los archivos subidos.")
+        st.info("No se encontraron facturas válidas en los archivos subidos.")
 
-    # --- Mostrar datos de Retenciones ---
     if retenciones_data:
-        st.header("Retenciones Recibidas")
+        st.header("Retenciones Procesadas Exitosamente")
         df_retenciones = pd.DataFrame(retenciones_data)
-        
         total_retenido = df_retenciones['Valor Retenido'].sum()
         st.metric("Total Retenido", f"${total_retenido:,.2f}")
-        
         st.dataframe(df_retenciones)
     else:
-        st.info("No se encontraron retenciones en los archivos subidos.")
+        st.info("No se encontraron retenciones válidas en los archivos subidos.")
 
-    # --- Botón de descarga ---
     if facturas_data or retenciones_data:
         st.header("Descargar Datos Consolidados")
         report_dict = {}
@@ -152,5 +151,4 @@ if uploaded_files: # Si la lista no está vacía
             report_dict["Facturas"] = df_facturas
         if retenciones_data:
             report_dict["Retenciones"] = df_retenciones
-            
         st.markdown(get_table_download_link(report_dict), unsafe_allow_html=True)
